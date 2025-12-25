@@ -401,6 +401,10 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [showOfflineDownload, setShowOfflineDownload] = useState(false);
+  const [offlineUrl, setOfflineUrl] = useState("");
+  const [offlineFilename, setOfflineFilename] = useState("");
+  const [offlineDownloading, setOfflineDownloading] = useState(false);
 
   useEffect(() => {
     setPath("");
@@ -448,6 +452,21 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
     if (!confirm(`确定删除 ${key}?`)) return;
     try {
       const res = await fetch(`/api/files/${storage.id}/${key}`, { method: "DELETE" });
+      if (res.ok) {
+        loadFiles();
+      } else {
+        const data = (await res.json()) as { error?: string };
+        alert(data.error || "删除失败");
+      }
+    } catch {
+      alert("网络错误");
+    }
+  };
+
+  const deleteFolder = async (key: string, name: string) => {
+    if (!confirm(`确定删除文件夹 "${name}" 及其所有内容?`)) return;
+    try {
+      const res = await fetch(`/api/files/${storage.id}/${key}?action=rmdir`, { method: "DELETE" });
       if (res.ok) {
         loadFiles();
       } else {
@@ -530,6 +549,39 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
     }
   };
 
+  const handleOfflineDownload = async () => {
+    if (!offlineUrl.trim()) return;
+
+    setOfflineDownloading(true);
+    try {
+      const res = await fetch(`/api/files/${storage.id}/${path}?action=fetch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: offlineUrl.trim(),
+          filename: offlineFilename.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json() as { success?: boolean; filename?: string; size?: number; error?: string };
+
+      if (res.ok && data.success) {
+        const sizeStr = data.size ? ` (${formatBytes(data.size)})` : "";
+        alert(`下载成功: ${data.filename}${sizeStr}`);
+        setOfflineUrl("");
+        setOfflineFilename("");
+        setShowOfflineDownload(false);
+        loadFiles();
+      } else {
+        alert(data.error || "下载失败");
+      }
+    } catch {
+      alert("网络错误");
+    } finally {
+      setOfflineDownloading(false);
+    }
+  };
+
   const breadcrumbs = path ? path.split("/").filter(Boolean) : [];
 
   // Get previewable files for navigation
@@ -605,6 +657,12 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
               >
                 + 文件夹
               </button>
+              <button
+                onClick={() => setShowOfflineDownload(true)}
+                className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono px-2 py-1"
+              >
+                离线下载
+              </button>
               <label className={`text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 font-mono cursor-pointer rounded ${uploadProgress ? 'opacity-50 pointer-events-none' : ''}`}>
                 {uploadProgress ? '上传中...' : '上传'}
                 <input type="file" multiple onChange={handleUpload} className="hidden" disabled={!!uploadProgress} />
@@ -651,6 +709,66 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
             >
               取消
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Offline Download Input */}
+      {showOfflineDownload && (
+        <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/50">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-zinc-500 font-mono shrink-0">链接地址:</span>
+              <input
+                type="url"
+                value={offlineUrl}
+                onChange={(e) => setOfflineUrl(e.target.value)}
+                placeholder="https://example.com/file.zip"
+                className="flex-1 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 px-2 py-1 text-sm font-mono text-zinc-900 dark:text-zinc-100 rounded focus:border-blue-500 focus:outline-none"
+                autoFocus
+                disabled={offlineDownloading}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-zinc-500 font-mono shrink-0">文件名称:</span>
+              <input
+                type="text"
+                value={offlineFilename}
+                onChange={(e) => setOfflineFilename(e.target.value)}
+                placeholder="可选，留空自动识别"
+                className="flex-1 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 px-2 py-1 text-sm font-mono text-zinc-900 dark:text-zinc-100 rounded focus:border-blue-500 focus:outline-none"
+                disabled={offlineDownloading}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleOfflineDownload();
+                  if (e.key === "Escape") {
+                    setShowOfflineDownload(false);
+                    setOfflineUrl("");
+                    setOfflineFilename("");
+                  }
+                }}
+              />
+              <button
+                onClick={handleOfflineDownload}
+                disabled={offlineDownloading || !offlineUrl.trim()}
+                className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-3 py-1 font-mono rounded whitespace-nowrap"
+              >
+                {offlineDownloading ? "下载中..." : "开始下载"}
+              </button>
+              <button
+                onClick={() => {
+                  setShowOfflineDownload(false);
+                  setOfflineUrl("");
+                  setOfflineFilename("");
+                }}
+                disabled={offlineDownloading}
+                className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono px-2 py-1"
+              >
+                取消
+              </button>
+            </div>
+            <p className="text-xs text-zinc-400 dark:text-zinc-600 font-mono">
+              提示: 文件将下载到当前目录，大文件可能需要较长时间
+            </p>
           </div>
         </div>
       )}
@@ -733,7 +851,17 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
                     {formatDate(obj.lastModified)}
                   </td>
                   <td className="py-2 px-4 text-right">
-                    {!obj.isDirectory && (
+                    {obj.isDirectory ? (
+                      isAdmin && (
+                        <button
+                          onClick={() => deleteFolder(obj.key, obj.name)}
+                          className="text-zinc-400 dark:text-zinc-500 hover:text-red-500"
+                          title="删除文件夹"
+                        >
+                          ×
+                        </button>
+                      )
+                    ) : (
                       <div className="flex items-center justify-end gap-2">
                         {isPreviewable(obj.name) && (
                           <button

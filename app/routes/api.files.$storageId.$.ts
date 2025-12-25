@@ -149,6 +149,78 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     }
   }
 
+  // Offline download from URL
+  if (method === "POST" && action === "fetch") {
+    try {
+      const body = await request.json() as { url?: string; filename?: string };
+      const { url: remoteUrl, filename } = body;
+
+      if (!remoteUrl) {
+        return Response.json({ error: "URL is required" }, { status: 400 });
+      }
+
+      // Validate URL
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(remoteUrl);
+      } catch {
+        return Response.json({ error: "Invalid URL" }, { status: 400 });
+      }
+
+      // Fetch the remote file
+      const remoteResponse = await fetch(parsedUrl.href, {
+        headers: {
+          "User-Agent": "CList/1.0",
+        },
+      });
+
+      if (!remoteResponse.ok) {
+        return Response.json(
+          { error: `Failed to fetch: ${remoteResponse.status} ${remoteResponse.statusText}` },
+          { status: 400 }
+        );
+      }
+
+      // Get filename from URL or Content-Disposition header or use provided filename
+      let finalFilename = filename;
+      if (!finalFilename) {
+        const contentDisposition = remoteResponse.headers.get("content-disposition");
+        if (contentDisposition) {
+          const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+          if (match) {
+            finalFilename = match[1].replace(/['"]/g, "");
+          }
+        }
+        if (!finalFilename) {
+          finalFilename = parsedUrl.pathname.split("/").pop() || "download";
+        }
+      }
+
+      // Get content type
+      const contentType = remoteResponse.headers.get("content-type") || "application/octet-stream";
+
+      // Read the body as ArrayBuffer
+      const bodyBuffer = await remoteResponse.arrayBuffer();
+
+      // Upload to S3
+      const uploadPath = path ? `${path}/${finalFilename}` : finalFilename;
+      await s3Client.putObject(uploadPath, bodyBuffer, contentType);
+
+      return Response.json({
+        success: true,
+        path: uploadPath,
+        filename: finalFilename,
+        size: bodyBuffer.byteLength,
+        contentType,
+      });
+    } catch (error) {
+      return Response.json(
+        { error: error instanceof Error ? error.message : "Failed to fetch and upload file" },
+        { status: 500 }
+      );
+    }
+  }
+
   // Upload file
   if (method === "POST" || method === "PUT") {
     const contentType = request.headers.get("content-type") || "application/octet-stream";
@@ -169,8 +241,66 @@ export async function action({ request, params, context }: Route.ActionArgs) {
     }
   }
 
-  // Delete file
+  // Delete file or folder
   if (method === "DELETE") {
+    // Recursive folder deletion
+    if (action === "rmdir") {
+      try {
+        // List all objects in the folder
+        const listAll = async (prefix: string): Promise<string[]> => {
+          const keys: string[] = [];
+          let continuationToken: string | undefined;
+
+          do {
+            const result = await s3Client.listObjects(prefix, "/", 1000, continuationToken);
+
+            // Add files
+            for (const obj of result.objects) {
+              if (!obj.isDirectory) {
+                keys.push(obj.key);
+              }
+            }
+
+            // Recursively list subfolders
+            for (const obj of result.objects) {
+              if (obj.isDirectory) {
+                const subKeys = await listAll(obj.key);
+                keys.push(...subKeys);
+                // Also add the folder itself (empty object with trailing slash)
+                keys.push(obj.key);
+              }
+            }
+
+            continuationToken = result.nextContinuationToken;
+          } while (continuationToken);
+
+          return keys;
+        };
+
+        const keysToDelete = await listAll(path);
+
+        // Delete all objects
+        for (const key of keysToDelete) {
+          await s3Client.deleteObject(key);
+        }
+
+        // Also try to delete the folder object itself
+        try {
+          await s3Client.deleteObject(path.endsWith("/") ? path : path + "/");
+        } catch {
+          // Folder object might not exist, ignore
+        }
+
+        return Response.json({ success: true, deleted: keysToDelete.length });
+      } catch (error) {
+        return Response.json(
+          { error: error instanceof Error ? error.message : "Failed to delete folder" },
+          { status: 500 }
+        );
+      }
+    }
+
+    // Single file deletion
     try {
       await s3Client.deleteObject(path);
       return Response.json({ success: true });
