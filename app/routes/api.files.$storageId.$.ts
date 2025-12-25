@@ -133,6 +133,21 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   });
 
   const method = request.method;
+  const url = new URL(request.url);
+  const action = url.searchParams.get("action");
+
+  // Create folder
+  if (method === "POST" && action === "mkdir") {
+    try {
+      await s3Client.createFolder(path);
+      return Response.json({ success: true, path });
+    } catch (error) {
+      return Response.json(
+        { error: error instanceof Error ? error.message : "Failed to create folder" },
+        { status: 500 }
+      );
+    }
+  }
 
   // Upload file
   if (method === "POST" || method === "PUT") {

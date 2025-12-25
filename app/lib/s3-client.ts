@@ -414,6 +414,12 @@ export class S3Client {
     }
   }
 
+  async createFolder(folderPath: string): Promise<void> {
+    // S3 folders are represented by empty objects with trailing slash
+    const normalizedPath = folderPath.endsWith("/") ? folderPath : folderPath + "/";
+    await this.putObject(normalizedPath, "", "application/x-directory");
+  }
+
   async headObject(key: string): Promise<{ contentLength: number; contentType: string; lastModified: string } | null> {
     const fullKey = this.getFullPath(key);
     const path = `/${this.config.bucket}/${fullKey}`;

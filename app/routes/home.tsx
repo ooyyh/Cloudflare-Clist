@@ -2,6 +2,8 @@ import type { Route } from "./+types/home";
 import { requireAuth } from "~/lib/auth";
 import { getAllStorages, getPublicStorages, initDatabase } from "~/lib/storage";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { FilePreview } from "~/components/FilePreview";
+import { getFileType, isPreviewable } from "~/lib/file-utils";
 
 export function meta({ data }: Route.MetaArgs) {
   const title = data?.siteTitle || "CList";
@@ -395,6 +397,10 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [uploadProgress, setUploadProgress] = useState<{ name: string; progress: number } | null>(null);
+  const [previewFile, setPreviewFile] = useState<S3Object | null>(null);
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
 
   useEffect(() => {
     setPath("");
@@ -499,7 +505,68 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
     e.target.value = "";
   };
 
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return;
+
+    setCreatingFolder(true);
+    try {
+      const folderPath = path ? `${path}/${newFolderName.trim()}` : newFolderName.trim();
+      const res = await fetch(`/api/files/${storage.id}/${folderPath}?action=mkdir`, {
+        method: "POST",
+      });
+
+      if (res.ok) {
+        setNewFolderName("");
+        setShowNewFolderInput(false);
+        loadFiles();
+      } else {
+        const data = (await res.json()) as { error?: string };
+        alert(data.error || "创建文件夹失败");
+      }
+    } catch {
+      alert("网络错误");
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
   const breadcrumbs = path ? path.split("/").filter(Boolean) : [];
+
+  // Get previewable files for navigation
+  const previewableFiles = objects.filter((obj) => !obj.isDirectory && isPreviewable(obj.name));
+  const currentPreviewIndex = previewFile ? previewableFiles.findIndex((f) => f.key === previewFile.key) : -1;
+
+  const handlePreview = (obj: S3Object) => {
+    if (isPreviewable(obj.name)) {
+      setPreviewFile(obj);
+    }
+  };
+
+  const handlePrevPreview = () => {
+    if (currentPreviewIndex > 0) {
+      setPreviewFile(previewableFiles[currentPreviewIndex - 1]);
+    }
+  };
+
+  const handleNextPreview = () => {
+    if (currentPreviewIndex < previewableFiles.length - 1) {
+      setPreviewFile(previewableFiles[currentPreviewIndex + 1]);
+    }
+  };
+
+  // Get file icon based on type
+  const getFileIcon = (fileName: string) => {
+    const type = getFileType(fileName);
+    switch (type) {
+      case 'video': return '🎬';
+      case 'audio': return '🎵';
+      case 'image': return '🖼️';
+      case 'pdf': return '📕';
+      case 'code': return '📝';
+      case 'text': return '📄';
+      default: return '📄';
+    }
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -531,13 +598,62 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
             刷新
           </button>
           {isAdmin && (
-            <label className={`text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 font-mono cursor-pointer ${uploadProgress ? 'opacity-50 pointer-events-none' : ''}`}>
-              {uploadProgress ? '上传中...' : '上传'}
-              <input type="file" multiple onChange={handleUpload} className="hidden" disabled={!!uploadProgress} />
-            </label>
+            <>
+              <button
+                onClick={() => setShowNewFolderInput(true)}
+                className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono px-2 py-1"
+              >
+                + 文件夹
+              </button>
+              <label className={`text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 font-mono cursor-pointer rounded ${uploadProgress ? 'opacity-50 pointer-events-none' : ''}`}>
+                {uploadProgress ? '上传中...' : '上传'}
+                <input type="file" multiple onChange={handleUpload} className="hidden" disabled={!!uploadProgress} />
+              </label>
+            </>
           )}
         </div>
       </div>
+
+      {/* New Folder Input */}
+      {showNewFolderInput && (
+        <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/50">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-zinc-500 font-mono">新建文件夹:</span>
+            <input
+              type="text"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleCreateFolder();
+                if (e.key === "Escape") {
+                  setShowNewFolderInput(false);
+                  setNewFolderName("");
+                }
+              }}
+              placeholder="输入文件夹名称"
+              className="flex-1 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 px-2 py-1 text-sm font-mono text-zinc-900 dark:text-zinc-100 rounded focus:border-blue-500 focus:outline-none"
+              autoFocus
+              disabled={creatingFolder}
+            />
+            <button
+              onClick={handleCreateFolder}
+              disabled={creatingFolder || !newFolderName.trim()}
+              className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-3 py-1 font-mono rounded"
+            >
+              {creatingFolder ? "创建中..." : "创建"}
+            </button>
+            <button
+              onClick={() => {
+                setShowNewFolderInput(false);
+                setNewFolderName("");
+              }}
+              className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono px-2 py-1"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Upload Progress */}
       {uploadProgress && (
@@ -595,9 +711,17 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
                         <span className="text-yellow-500">📁</span>
                         {obj.name}
                       </button>
+                    ) : isPreviewable(obj.name) ? (
+                      <button
+                        onClick={() => handlePreview(obj)}
+                        className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300 hover:text-blue-500 dark:hover:text-blue-400"
+                      >
+                        <span>{getFileIcon(obj.name)}</span>
+                        {obj.name}
+                      </button>
                     ) : (
                       <span className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
-                        <span className="text-zinc-400 dark:text-zinc-500">📄</span>
+                        <span className="text-zinc-400 dark:text-zinc-500">{getFileIcon(obj.name)}</span>
                         {obj.name}
                       </span>
                     )}
@@ -611,6 +735,15 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
                   <td className="py-2 px-4 text-right">
                     {!obj.isDirectory && (
                       <div className="flex items-center justify-end gap-2">
+                        {isPreviewable(obj.name) && (
+                          <button
+                            onClick={() => handlePreview(obj)}
+                            className="text-zinc-400 dark:text-zinc-500 hover:text-blue-500"
+                            title="预览"
+                          >
+                            ▶
+                          </button>
+                        )}
                         <button
                           onClick={() => downloadFile(obj.key)}
                           className="text-zinc-400 dark:text-zinc-500 hover:text-blue-500"
@@ -636,6 +769,20 @@ function FileBrowser({ storage, isAdmin, isDark }: { storage: StorageInfo; isAdm
           </table>
         )}
       </div>
+
+      {/* File Preview Modal */}
+      {previewFile && (
+        <FilePreview
+          storageId={storage.id}
+          fileKey={previewFile.key}
+          fileName={previewFile.name}
+          onClose={() => setPreviewFile(null)}
+          onPrev={handlePrevPreview}
+          onNext={handleNextPreview}
+          hasPrev={currentPreviewIndex > 0}
+          hasNext={currentPreviewIndex < previewableFiles.length - 1}
+        />
+      )}
     </div>
   );
 }
@@ -758,21 +905,21 @@ export default function Home({ loaderData }: Route.ComponentProps) {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 transition-colors">
+    <div className="h-screen overflow-hidden bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 transition-colors flex flex-col">
       {/* Header */}
-      <header className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-        <div className="px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3 w-48">
+      <header className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shrink-0">
+        <div className="px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 shrink-0">
             <span className="text-xl font-bold font-mono tracking-tight">CList</span>
           </div>
-          <div className="flex-1 text-center">
-            <span className="text-sm font-mono text-zinc-600 dark:text-zinc-400">{siteTitle}</span>
+          <div className="flex-1 text-center min-w-0">
+            <span className="text-sm font-mono text-zinc-600 dark:text-zinc-400 truncate block">{siteTitle}</span>
           </div>
-          <div className="flex items-center gap-3 w-48 justify-end">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               ref={themeButtonRef}
               onClick={toggleTheme}
-              className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono px-2 py-1"
+              className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono px-2 py-1 whitespace-nowrap"
             >
               {isDark ? "☀ 亮色" : "☾ 暗色"}
             </button>
@@ -780,14 +927,14 @@ export default function Home({ loaderData }: Route.ComponentProps) {
               <>
                 <button
                   onClick={() => setShowSettings(true)}
-                  className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono"
+                  className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono whitespace-nowrap"
                 >
                   关于
                 </button>
-                <span className="text-xs text-green-600 dark:text-green-500 font-mono">● 管理员</span>
+                <span className="text-xs text-green-600 dark:text-green-500 font-mono whitespace-nowrap">● 管理员</span>
                 <button
                   onClick={handleLogout}
-                  className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono"
+                  className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono whitespace-nowrap"
                 >
                   登出
                 </button>
@@ -795,7 +942,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
             ) : (
               <button
                 onClick={() => setShowLogin(true)}
-                className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono"
+                className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 font-mono whitespace-nowrap"
               >
                 登录
               </button>
@@ -804,10 +951,10 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         </div>
       </header>
 
-      <div className="flex min-h-[calc(100vh-57px)]">
+      <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-64 border-r border-zinc-200 dark:border-zinc-800 shrink-0 bg-white dark:bg-zinc-900/50">
-          <div className="p-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+        <aside className="w-64 border-r border-zinc-200 dark:border-zinc-800 shrink-0 bg-white dark:bg-zinc-900/50 flex flex-col">
+          <div className="p-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between shrink-0">
             <span className="text-xs text-zinc-500 font-mono uppercase tracking-wider">存储列表</span>
             {isAdmin && (
               <button
@@ -818,7 +965,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
               </button>
             )}
           </div>
-          <div className="overflow-y-auto h-[calc(100vh-120px)]">
+          <div className="overflow-y-auto flex-1">
             {storages.length === 0 ? (
               <div className="p-4 text-center text-zinc-400 dark:text-zinc-600 text-xs font-mono">
                 暂无存储
@@ -867,7 +1014,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         </aside>
 
         {/* Main */}
-        <main className="flex-1 bg-zinc-50 dark:bg-zinc-900 min-w-0">
+        <main className="flex-1 bg-zinc-50 dark:bg-zinc-900 min-w-0 overflow-hidden">
           {selectedStorage ? (
             <FileBrowser storage={selectedStorage} isAdmin={isAdmin} isDark={isDark} />
           ) : (
