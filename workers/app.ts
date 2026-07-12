@@ -36,9 +36,21 @@ function getWebdavParams(request: Request): { storageId: string; "*": string } |
   if (!match) {
     return null;
   }
+  const rawPath = match[2] || "";
+  const decodedPath = rawPath
+    .split("/")
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    })
+    .join("/");
+
   return {
     storageId: match[1],
-    "*": match[2] || "",
+    "*": decodedPath,
   };
 }
 
