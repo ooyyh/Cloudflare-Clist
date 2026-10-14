@@ -101,6 +101,56 @@ html.dark {
   .field {
     @apply w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500;
   }
+
+  .soft-loading-shell {
+    @apply mx-auto w-full max-w-xl rounded-2xl border border-zinc-200/80 bg-white/75 p-4 shadow-sm backdrop-blur-sm dark:border-zinc-700/70 dark:bg-zinc-900/45;
+    animation: soft-breathe 2.6s ease-in-out infinite;
+  }
+  .soft-loading-header {
+    @apply flex items-center gap-2 text-sm font-medium text-zinc-600 dark:text-zinc-300;
+  }
+  .soft-loading-dot {
+    @apply h-2 w-2 rounded-full bg-blue-500/80;
+    animation: soft-breathe 1.6s ease-in-out infinite;
+  }
+  .soft-skeleton {
+    @apply relative overflow-hidden rounded-full bg-zinc-200/80 dark:bg-zinc-700/70;
+  }
+  .soft-skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(100deg, transparent, rgb(255 255 255 / 0.55), transparent);
+    animation: soft-shimmer 1.7s ease-in-out infinite;
+  }
+  .dark .soft-skeleton::after {
+    background: linear-gradient(100deg, transparent, rgb(255 255 255 / 0.18), transparent);
+  }
+}
+
+@keyframes soft-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes soft-breathe {
+  0%,
+  100% {
+    opacity: 0.88;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .soft-loading-shell,
+  .soft-loading-dot,
+  .soft-skeleton::after {
+    animation: none !important;
+  }
 }
 
 /* View Transition for theme toggle */
