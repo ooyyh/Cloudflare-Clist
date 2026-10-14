@@ -3,7 +3,7 @@ import { getFileType, formatDuration, getCodeLanguage, getMimeType, type FileTyp
 import { apiFileUrl } from "~/lib/api-path";
 import hljs from "highlight.js";
 import { marked } from "marked";
-import { X, Download, Play, Pause, RefreshCw, AlertCircle, Pencil, Check } from "~/components/icons";
+import { X, Download, Play, Pause, AlertCircle, Pencil, Check } from "~/components/icons";
 
 interface FilePreviewProps {
   storageId: number;
@@ -1384,9 +1384,18 @@ function formatBytesPreview(bytes: number): string {
 
 function PreviewLoading() {
   return (
-    <div className="flex items-center justify-center gap-2 text-zinc-400 text-sm">
-      <RefreshCw className="h-4 w-4 animate-spin" />
-      正在解析...
+    <div className="w-full max-w-md px-2">
+      <div className="soft-loading-shell">
+        <div className="soft-loading-header">
+          <span className="soft-loading-dot" aria-hidden />
+          <span>正在解析预览内容…</span>
+        </div>
+        <div className="mt-4 space-y-2.5">
+          <div className="soft-skeleton h-2.5 w-full" />
+          <div className="soft-skeleton h-2.5 w-4/5" />
+          <div className="soft-skeleton h-2.5 w-2/3" />
+        </div>
+      </div>
     </div>
   );
 }
