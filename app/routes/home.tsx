@@ -356,6 +356,19 @@ const driveConfigMap: Record<string, { name: string; supportsMultipart: boolean;
       },
     ],
   },
+  s3: {
+    name: "S3 兼容服务",
+    supportsMultipart: true,
+    fields: [
+      {
+        key: "forcePathStyle",
+        label: "强制使用 Path-Style 访问",
+        type: "boolean",
+        defaultValue: false,
+        help: "默认关闭=虚拟托管(Virtual-Hosted)，桶名作为子域名，阿里云 OSS / AWS S3 / R2 需保持关闭。仅 MinIO 等未配置泛域名解析的私有存储需开启。",
+      },
+    ],
+  },
 };
 
 function supportsMultipart(type?: string): boolean {
