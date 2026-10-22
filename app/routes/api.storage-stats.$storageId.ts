@@ -224,7 +224,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
         secretAccessKey: storage.secretAccessKey,
         bucket: storage.bucket,
         basePath: storage.basePath,
-        forcePathStyle: storage.config?.forcePathStyle === true || storage.config?.addressingStyle === "path",
+        forcePathStyle: storage.config?.forcePathStyle === true,
       });
     }
 
