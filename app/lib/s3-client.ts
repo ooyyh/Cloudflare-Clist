@@ -88,13 +88,37 @@ async function getSignatureKey(
   return hmacSha256(kService, "aws4_request");
 }
 
+// Endpoints that cannot support virtual-hosted addressing (bucket-as-subdomain):
+// IP literals, localhost, and explicit non-default ports — typical of MinIO and
+// other self-hosted S3 stacks. For these we default to path-style automatically,
+// so users don't have to flip the forcePathStyle toggle just to make MinIO work.
+// Domain endpoints (AWS S3 / R2 / Aliyun OSS) stay virtual-hosted.
+function looksLikePathStyleEndpoint(endpoint: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  const host = url.hostname;
+  // IPv4 or IPv6 literal (IPv6 hostname has no brackets but keeps colons)
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":")) return true;
+  // loopback
+  if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0") return true;
+  // explicit non-default port (MinIO on a custom port)
+  if (url.port && url.port !== "80" && url.port !== "443") return true;
+  return false;
+}
+
 export class S3Client {
   private config: S3Config;
   private readonly forcePathStyle: boolean;
 
   constructor(config: S3Config) {
     this.config = config;
-    this.forcePathStyle = config.forcePathStyle === true;
+    // Explicit opt-in wins; otherwise auto-detect from the endpoint shape.
+    this.forcePathStyle =
+      config.forcePathStyle === true ? true : looksLikePathStyleEndpoint(config.endpoint);
   }
 
   private getFullPath(path: string): string {

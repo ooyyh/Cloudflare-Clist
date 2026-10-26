@@ -367,7 +367,7 @@ const driveConfigMap: Record<string, { name: string; supportsMultipart: boolean;
         label: "强制使用 Path-Style 访问",
         type: "boolean",
         defaultValue: false,
-        help: "默认关闭=虚拟托管(Virtual-Hosted)，桶名作为子域名，阿里云 OSS / AWS S3 / R2 需保持关闭。仅 MinIO 等未配置泛域名解析的私有存储需开启。",
+        help: "默认(关闭)=自动识别：IP/本地/带端口端点用 Path-Style，域名端点用虚拟托管(Virtual-Hosted)。阿里云 OSS / AWS S3 / R2 保持关闭即可。仅当 MinIO 用了域名但没配泛域名解析时才需手动开启。",
       },
     ],
   },
