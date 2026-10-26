@@ -101,7 +101,19 @@ async function withClientState<T>(
   }
 }
 
-export async function loader({ request, params, context }: Route.LoaderArgs) {
+export async function loader(args: Route.LoaderArgs) {
+  try {
+    return await loaderImpl(args);
+  } catch (error) {
+    console.error("[api.files loader] uncaught:", error);
+    return Response.json(
+      { error: error instanceof Error ? error.message : "Internal error" },
+      { status: 500 }
+    );
+  }
+}
+
+async function loaderImpl({ request, params, context }: Route.LoaderArgs) {
   const db = context.cloudflare.env.DB;
   await initDatabase(db);
   const meta = getRequestMeta(request);
@@ -179,6 +191,7 @@ export async function loader({ request, params, context }: Route.LoaderArgs) {
         ...result,
       });
     } catch (error) {
+      console.error("[api.files list catch]", error);
       return Response.json(
         { error: error instanceof Error ? error.message : "Failed to list objects" },
         { status: 500 }
@@ -297,7 +310,19 @@ export async function loader({ request, params, context }: Route.LoaderArgs) {
   return Response.json({ error: "Unknown action" }, { status: 400 });
 }
 
-export async function action({ request, params, context }: Route.ActionArgs) {
+export async function action(args: Route.ActionArgs) {
+  try {
+    return await actionImpl(args);
+  } catch (error) {
+    console.error("[api.files action] uncaught:", error);
+    return Response.json(
+      { error: error instanceof Error ? error.message : "Internal error" },
+      { status: 500 }
+    );
+  }
+}
+
+async function actionImpl({ request, params, context }: Route.ActionArgs) {
   const db = context.cloudflare.env.DB;
   await initDatabase(db);
   const meta = getRequestMeta(request);
