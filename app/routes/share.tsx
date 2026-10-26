@@ -41,6 +41,24 @@ interface StorageInfo {
   name: string;
 }
 
+function SoftLoadingState({ label }: { label: string }) {
+  return (
+    <div className="w-full max-w-xl px-3">
+      <div className="soft-loading-shell">
+        <div className="soft-loading-header">
+          <span className="soft-loading-dot" aria-hidden />
+          <span>{label}</span>
+        </div>
+        <div className="mt-4 space-y-2.5">
+          <div className="soft-skeleton h-2.5 w-full" />
+          <div className="soft-skeleton h-2.5 w-4/5" />
+          <div className="soft-skeleton h-2.5 w-3/5" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "-";
   const k = 1024;
@@ -202,7 +220,7 @@ export default function Share({ loaderData }: Route.ComponentProps) {
   if (!share || !storage) {
     return (
       <div className="flex items-center justify-center h-screen bg-zinc-100 dark:bg-zinc-950">
-        <div className="text-zinc-500 dark:text-zinc-400 text-sm">加载中…</div>
+        <SoftLoadingState label="正在准备分享内容…" />
       </div>
     );
   }
@@ -291,9 +309,8 @@ export default function Share({ loaderData }: Route.ComponentProps) {
       {/* Content */}
       <div className="flex-1 overflow-auto">
         {loading ? (
-          <div className="flex items-center justify-center gap-2 h-32 text-zinc-500 text-sm">
-            <Folder className="h-4 w-4 animate-spin" />
-            加载中…
+          <div className="py-5">
+            <SoftLoadingState label="正在加载文件列表…" />
           </div>
         ) : error ? (
           <div className="flex items-center justify-center gap-2 h-32 text-red-500 dark:text-red-400 text-sm">

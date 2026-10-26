@@ -91,6 +91,24 @@ interface StorageInfo {
   guestUpload: boolean;
 }
 
+function SoftLoadingState({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center py-6 px-3">
+      <div className="soft-loading-shell">
+        <div className="soft-loading-header">
+          <span className="soft-loading-dot" aria-hidden />
+          <span>{label}</span>
+        </div>
+        <div className="mt-4 space-y-2.5">
+          <div className="soft-skeleton h-2.5 w-full" />
+          <div className="soft-skeleton h-2.5 w-4/5" />
+          <div className="soft-skeleton h-2.5 w-3/5" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type ConfigField = {
   key: string;
   label: string;
@@ -1504,9 +1522,7 @@ function StorageStatsModal({ storage, onClose }: { storage: StorageInfo; onClose
         </div>
         <div className="flex-1 overflow-y-auto p-4">
           {loading ? (
-            <div className="flex items-center justify-center py-8">
-              <span className="text-zinc-400 dark:text-zinc-500 text-sm">正在统计中，请稍候...</span>
-            </div>
+            <SoftLoadingState label="正在统计中，请稍候…" />
           ) : error ? (
             <div className="flex items-center justify-center py-8">
               <span className="text-red-500 text-sm">{error}</span>
@@ -1866,9 +1882,7 @@ function ChangelogModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="flex-1 overflow-y-auto p-4">
           {loading ? (
-            <div className="flex items-center justify-center py-8">
-              <span className="text-zinc-400 dark:text-zinc-500 text-sm">加载中...</span>
-            </div>
+            <SoftLoadingState label="加载中…" />
           ) : error ? (
             <div className="flex items-center justify-center py-8">
               <span className="text-red-500 text-sm">{error}</span>
@@ -3068,9 +3082,8 @@ function FileBrowser({ storage, isAdmin, isDark, chunkSizeMB }: { storage: Stora
             </div>
           </div>
         ) : loading ? (
-          <div className="flex items-center justify-center gap-2 h-32 text-zinc-500 text-sm">
-            <RefreshCw className="h-4 w-4 animate-spin" />
-            加载中…
+          <div className="py-5 px-3">
+            <SoftLoadingState label="正在加载目录内容…" />
           </div>
         ) : error ? (
           <div className="flex items-center justify-center gap-2 h-32 text-red-500 dark:text-red-400 text-sm">
