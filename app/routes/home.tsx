@@ -5,6 +5,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { FilePreview } from "~/components/FilePreview";
 import { getFileType, isPreviewable } from "~/lib/file-utils";
 import { apiFileUrl } from "~/lib/api-path";
+import { uploadManager, filesFromDataTransfer, migrateLegacyUploads, type EnqueueEntry } from "~/lib/upload-manager";
+import { UploadTaskPanel } from "~/components/UploadTaskPanel";
 import { marked } from "marked";
 import {
   X, Plus, Search, Sun, Moon, SlidersHorizontal, LogIn, LogOut, ShieldCheck, Cloud,
@@ -1944,15 +1946,6 @@ function FileBrowser({ storage, isAdmin, isDark, chunkSizeMB }: { storage: Stora
   const [objects, setObjects] = useState<S3Object[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [uploadProgress, setUploadProgress] = useState<{
-    name: string;
-    progress: number;
-    currentPart?: number;
-    totalParts?: number;
-    speed?: number; // bytes per second
-    loaded?: number;
-    total?: number;
-  } | null>(null);
   const [previewFile, setPreviewFile] = useState<S3Object | null>(null);
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -2519,30 +2512,21 @@ function FileBrowser({ storage, isAdmin, isDark, chunkSizeMB }: { storage: Stora
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [globalSearch, searchQuery, storage.id]);
 
-  const uploadFiles = async (fileList: File[]) => {
-    if (fileList.length === 0) return;
-    const CHUNK_SIZE = chunkSizeMB * 1024 * 1024;
-    for (const file of fileList) {
-      try {
-        const uploadPath = path ? `${path}/${file.name}` : file.name;
-        const canMultipart = supportsMultipart(storage.type);
-        if (file.size >= CHUNK_SIZE && canMultipart) {
-          await uploadMultipart(file, uploadPath, CHUNK_SIZE);
-        } else {
-          await uploadSingle(file, uploadPath);
-        }
-      } catch (err) {
-        alert(`上传 ${file.name} 失败: ${err instanceof Error ? err.message : "未知错误"}`);
-      }
-    }
-    setUploadProgress(null);
-    loadFiles();
+  // 上传任务统一走 uploadManager：多任务并发 + 断点续传 + 刷新恢复（lib/upload-manager.ts）
+  const enqueueUploads = (entries: EnqueueEntry[]) => {
+    if (entries.length === 0) return;
+    uploadManager.enqueue(entries, {
+      storageId: storage.id,
+      path,
+      chunkSize: chunkSizeMB * 1024 * 1024,
+      multipartSupported: supportsMultipart(storage.type),
+    });
   };
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    await uploadFiles(Array.from(files));
+    enqueueUploads(Array.from(files, (file) => ({ file })));
     e.target.value = "";
   };
 
@@ -2553,13 +2537,29 @@ function FileBrowser({ storage, isAdmin, isDark, chunkSizeMB }: { storage: Stora
       const files = e.clipboardData?.files;
       if (files && files.length > 0) {
         e.preventDefault();
-        uploadFiles(Array.from(files));
+        enqueueUploads(Array.from(files, (file) => ({ file })));
       }
     };
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canUpload, path, storage.id, storage.type, chunkSizeMB]);
+
+  // 上传完成后刷新当前存储的文件列表（防抖合并连续完成；不打断在跑的其他任务）
+  const loadFilesRef = useRef(loadFiles);
+  useEffect(() => { loadFilesRef.current = loadFiles; });
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsub = uploadManager.onFinish((task) => {
+      if (task.storageId !== storage.id) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; loadFilesRef.current(); }, 400);
+    });
+    return () => {
+      unsub();
+      if (timer) clearTimeout(timer);
+    };
+  }, [storage.id]);
 
   // ⌘K / Ctrl+K 命令面板
   useEffect(() => {
@@ -2574,298 +2574,6 @@ function FileBrowser({ storage, isAdmin, isDark, chunkSizeMB }: { storage: Stora
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  const uploadSingle = async (file: File, uploadPath: string) => {
-    await new Promise<void>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const percent = Math.round((event.loaded / event.total) * 100);
-          setUploadProgress({ name: file.name, progress: percent });
-        }
-      };
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve();
-        } else {
-          try {
-            const data = JSON.parse(xhr.responseText);
-            reject(new Error(data.error || "上传失败"));
-          } catch {
-            reject(new Error("上传失败"));
-          }
-        }
-      };
-
-      xhr.onerror = () => reject(new Error("网络错误"));
-
-      xhr.open("PUT", apiFileUrl(storage.id, uploadPath));
-      xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-      xhr.send(file);
-    });
-  };
-
-  const uploadMultipart = async (file: File, uploadPath: string, chunkSize: number) => {
-    const totalParts = Math.ceil(file.size / chunkSize);
-    const contentType = file.type || "application/octet-stream";
-    const CONCURRENT_UPLOADS = 5;
-
-    // Check for existing upload in localStorage (resume support)
-    const storageKey = `multipart_${storage.id}_${uploadPath}_${file.size}`;
-    const savedState = localStorage.getItem(storageKey);
-    let uploadId: string;
-    let completedParts: { partNumber: number; etag: string }[] = [];
-    let startPart = 0;
-    let useDirectUpload = true; // Try direct S3 upload first
-
-    if (savedState) {
-      try {
-        const parsed = JSON.parse(savedState);
-        if (parsed.uploadId && parsed.parts && parsed.fileName === file.name) {
-          const shouldResume = confirm(`检测到未完成的上传 "${file.name}"，是否继续？\n已完成 ${parsed.parts.length}/${totalParts} 分片`);
-          if (shouldResume) {
-            uploadId = parsed.uploadId;
-            completedParts = parsed.parts;
-            startPart = completedParts.length;
-            useDirectUpload = parsed.useDirectUpload ?? true;
-          } else {
-            try {
-              await fetch(`${apiFileUrl(storage.id, uploadPath)}?action=multipart-abort`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ uploadId: parsed.uploadId }),
-              });
-            } catch { /* ignore */ }
-            localStorage.removeItem(storageKey);
-          }
-        }
-      } catch { /* ignore invalid state */ }
-    }
-
-    // Initialize new upload if needed
-    if (!uploadId!) {
-      setUploadProgress({ name: file.name, progress: 0, currentPart: 0, totalParts, speed: 0, loaded: 0, total: file.size });
-
-      const initRes = await fetch(`${apiFileUrl(storage.id, uploadPath)}?action=multipart-init`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contentType, size: file.size, chunkSize }),
-      });
-
-      if (!initRes.ok) {
-        const data = await initRes.json() as { error?: string };
-        throw new Error(data.error || "初始化分片上传失败");
-      }
-
-      const initData = await initRes.json() as { uploadId: string };
-      uploadId = initData.uploadId;
-
-      localStorage.setItem(storageKey, JSON.stringify({
-        uploadId,
-        fileName: file.name,
-        parts: [],
-        useDirectUpload: true,
-      }));
-    }
-
-    // Speed calculation
-    let totalBytesUploaded = startPart * chunkSize;
-    const startTime = Date.now();
-    const partProgress: Record<number, number> = {};
-
-    const updateProgress = () => {
-      const currentBytes = totalBytesUploaded + Object.values(partProgress).reduce((a, b) => a + b, 0);
-      const elapsed = (Date.now() - startTime) / 1000;
-      const speed = elapsed > 0 ? currentBytes / elapsed : 0;
-      const progress = Math.round((currentBytes / file.size) * 100);
-
-      setUploadProgress({
-        name: file.name,
-        progress: Math.min(progress, 100),
-        currentPart: completedParts.length,
-        totalParts,
-        speed,
-        loaded: currentBytes,
-        total: file.size,
-      });
-    };
-
-    updateProgress();
-
-    try {
-      const remainingParts = Array.from({ length: totalParts - startPart }, (_, i) => startPart + i + 1);
-
-      // Get signed URLs for direct upload
-      let signedUrls: Record<number, string> = {};
-      if (useDirectUpload) {
-        try {
-          const urlsRes = await fetch(`${apiFileUrl(storage.id, uploadPath)}?action=multipart-urls`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ uploadId, partNumbers: remainingParts }),
-          });
-          if (urlsRes.ok) {
-            const data = await urlsRes.json() as { urls: Record<number, string> };
-            signedUrls = data.urls;
-          }
-        } catch { /* will fallback to proxy */ }
-      }
-
-      const uploadQueue = remainingParts.map((partNumber) => ({
-        partNumber,
-        start: (partNumber - 1) * chunkSize,
-        end: Math.min(partNumber * chunkSize, file.size),
-      }));
-
-      // Upload part - tries direct S3 first, falls back to Workers proxy
-      const uploadPart = async (item: { partNumber: number; start: number; end: number }): Promise<{ partNumber: number; etag: string }> => {
-        const chunk = file.slice(item.start, item.end);
-
-        // Try direct S3 upload first
-        if (useDirectUpload && signedUrls[item.partNumber]) {
-          try {
-            const result = await uploadPartDirect(chunk, signedUrls[item.partNumber], item.partNumber);
-            return result;
-          } catch (e) {
-            // CORS or network error - switch to proxy mode
-            console.log("Direct upload failed, switching to proxy mode");
-            useDirectUpload = false;
-            // Update saved state
-            localStorage.setItem(storageKey, JSON.stringify({
-              uploadId,
-              fileName: file.name,
-              parts: completedParts,
-              useDirectUpload: false,
-            }));
-          }
-        }
-
-        // Fallback: upload through Workers proxy
-        return uploadPartProxy(chunk, uploadPath, uploadId, item.partNumber);
-      };
-
-      const uploadPartDirect = (chunk: Blob, url: string, partNumber: number): Promise<{ partNumber: number; etag: string }> => {
-        return new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-
-          xhr.upload.onprogress = (event) => {
-            if (event.lengthComputable) {
-              partProgress[partNumber] = event.loaded;
-              updateProgress();
-            }
-          };
-
-          xhr.onload = () => {
-            delete partProgress[partNumber];
-            if (xhr.status >= 200 && xhr.status < 300) {
-              const etag = xhr.getResponseHeader("ETag")?.replace(/"/g, "") || "";
-              totalBytesUploaded += chunk.size;
-              resolve({ partNumber, etag });
-            } else {
-              reject(new Error(`Direct upload failed: ${xhr.status}`));
-            }
-          };
-
-          xhr.onerror = () => {
-            delete partProgress[partNumber];
-            reject(new Error("Direct upload network error"));
-          };
-
-          xhr.open("PUT", url);
-          xhr.send(chunk);
-        });
-      };
-
-      const uploadPartProxy = (chunk: Blob, path: string, upId: string, partNumber: number): Promise<{ partNumber: number; etag: string }> => {
-        return new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-
-          xhr.upload.onprogress = (event) => {
-            if (event.lengthComputable) {
-              partProgress[partNumber] = event.loaded;
-              updateProgress();
-            }
-          };
-
-          xhr.onload = () => {
-            delete partProgress[partNumber];
-            if (xhr.status >= 200 && xhr.status < 300) {
-              try {
-                const data = JSON.parse(xhr.responseText);
-                totalBytesUploaded += chunk.size;
-                resolve({ partNumber, etag: data.etag });
-              } catch {
-                reject(new Error(`解析响应失败: 分片 ${partNumber}`));
-              }
-            } else {
-              try {
-                const data = JSON.parse(xhr.responseText);
-                reject(new Error(data.error || `分片 ${partNumber} 失败`));
-              } catch {
-                reject(new Error(`分片 ${partNumber} 失败: ${xhr.status}`));
-              }
-            }
-          };
-
-          xhr.onerror = () => {
-            delete partProgress[partNumber];
-            reject(new Error(`网络错误: 分片 ${partNumber}`));
-          };
-
-          const url = `${apiFileUrl(storage.id, path)}?action=multipart-upload&uploadId=${encodeURIComponent(upId)}&partNumber=${partNumber}`;
-          xhr.open("PUT", url);
-          xhr.send(chunk);
-        });
-      };
-
-      // Process queue with concurrency limit
-      let index = 0;
-
-      const runNext = async (): Promise<void> => {
-        while (index < uploadQueue.length) {
-          const currentIndex = index++;
-          const item = uploadQueue[currentIndex];
-          const result = await uploadPart(item);
-          completedParts.push(result);
-
-          localStorage.setItem(storageKey, JSON.stringify({
-            uploadId,
-            fileName: file.name,
-            parts: completedParts,
-            useDirectUpload,
-          }));
-
-          updateProgress();
-        }
-      };
-
-      // Start concurrent uploads (reduce concurrency for proxy mode)
-      const concurrency = useDirectUpload ? CONCURRENT_UPLOADS : 3;
-      const workers = Array(Math.min(concurrency, uploadQueue.length))
-        .fill(null)
-        .map(() => runNext());
-
-      await Promise.all(workers);
-
-      // Complete multipart upload
-      const completeRes = await fetch(`${apiFileUrl(storage.id, uploadPath)}?action=multipart-complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uploadId, parts: completedParts }),
-      });
-
-      if (!completeRes.ok) {
-        const data = await completeRes.json() as { error?: string };
-        throw new Error(data.error || "完成分片上传失败");
-      }
-
-      localStorage.removeItem(storageKey);
-    } catch (err) {
-      throw err;
-    }
-  };
 
   const handleCreateFolder = async () => {
     if (!newFolderName.trim()) return;
@@ -3184,9 +2892,9 @@ function FileBrowser({ storage, isAdmin, isDark, chunkSizeMB }: { storage: Stora
             </>
           )}
           {canUpload && (
-            <label className={`btn btn-sm btn-primary cursor-pointer ${uploadProgress ? 'pointer-events-none opacity-50' : ''}`}>
-              {uploadProgress ? "上传中…" : (<><Upload />上传</>)}
-              <input type="file" multiple onChange={handleUpload} className="hidden" disabled={!!uploadProgress} />
+            <label className="btn btn-sm btn-primary cursor-pointer">
+              <Upload />上传
+              <input type="file" multiple onChange={handleUpload} className="hidden" />
             </label>
           )}
         </div>
@@ -3294,41 +3002,6 @@ function FileBrowser({ storage, isAdmin, isDark, chunkSizeMB }: { storage: Stora
         </div>
       )}
 
-      {/* Upload Progress */}
-      {uploadProgress && (
-        <div className="px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/40">
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-zinc-600 dark:text-zinc-300 truncate flex-1">
-              正在上传: {uploadProgress.name}
-              {uploadProgress.totalParts && (
-                <span className="text-zinc-400 dark:text-zinc-500 ml-1 tabular-nums">
-                  ({uploadProgress.currentPart}/{uploadProgress.totalParts} 分片)
-                </span>
-              )}
-            </span>
-            {uploadProgress.speed !== undefined && uploadProgress.speed > 0 && (
-              <span className="text-xs text-blue-500 shrink-0 tabular-nums">
-                {formatSpeed(uploadProgress.speed)}
-              </span>
-            )}
-            <span className="text-xs text-zinc-500 w-12 text-right tabular-nums">
-              {uploadProgress.progress}%
-            </span>
-          </div>
-          <div className="mt-1.5 h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-blue-500 transition-all duration-150 rounded-full"
-              style={{ width: `${uploadProgress.progress}%` }}
-            />
-          </div>
-          {uploadProgress.loaded !== undefined && uploadProgress.total !== undefined && (
-            <div className="mt-1 text-xs text-zinc-400 dark:text-zinc-500 tabular-nums">
-              {formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Directory README */}
       {readme && (
         <div className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40">
@@ -3356,9 +3029,9 @@ function FileBrowser({ storage, isAdmin, isDark, chunkSizeMB }: { storage: Stora
         onDrop={(e) => {
           e.preventDefault();
           setDragOver(false);
-          if (canUpload && e.dataTransfer.files.length > 0) {
-            uploadFiles(Array.from(e.dataTransfer.files));
-          }
+          if (!canUpload) return;
+          // 保留文件句柄（拖拽场景），刷新后可一键恢复续传
+          void filesFromDataTransfer(e.dataTransfer).then((entries) => enqueueUploads(entries));
         }}
       >
         {dragOver && (
@@ -3884,7 +3557,10 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         sessionStorage.setItem("announcement_shown", "true");
       }
     }
-  }, [siteAnnouncement]);
+
+    // 迁移旧版 multipart_* 上传残留为可恢复任务（一次性，键会被清除）
+    migrateLegacyUploads(chunkSizeMB);
+  }, [siteAnnouncement, chunkSizeMB]);
 
   const toggleTheme = useCallback((event: React.MouseEvent) => {
     const newIsDark = !isDark;
@@ -4178,6 +3854,9 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           </span>
         </div>
       </footer>
+
+      {/* 全局上传任务面板（多任务并发 / 恢复，独立于文件浏览生命周期） */}
+      <UploadTaskPanel />
 
       {/* Modals */}
       {showLogin && (
