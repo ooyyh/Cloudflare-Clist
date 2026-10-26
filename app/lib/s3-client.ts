@@ -93,6 +93,10 @@ async function getSignatureKey(
 // other self-hosted S3 stacks. For these we default to path-style automatically,
 // so users don't have to flip the forcePathStyle toggle just to make MinIO work.
 // Domain endpoints (AWS S3 / R2 / Aliyun OSS) stay virtual-hosted.
+//
+// Backblaze B2 (s3.<region>.backblazeb2.com) supports both styles on paper, but
+// its virtual-hosted signature validation is stricter and rejects signatures that
+// path-style accepts — so default B2 to path-style too.
 function looksLikePathStyleEndpoint(endpoint: string): boolean {
   let url: URL;
   try {
@@ -101,6 +105,8 @@ function looksLikePathStyleEndpoint(endpoint: string): boolean {
     return false;
   }
   const host = url.hostname;
+  // Backblaze B2 regional S3 endpoints
+  if (host.endsWith(".backblazeb2.com")) return true;
   // IPv4 or IPv6 literal (IPv6 hostname has no brackets but keeps colons)
   if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":")) return true;
   // loopback
